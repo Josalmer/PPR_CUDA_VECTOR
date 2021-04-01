@@ -179,7 +179,7 @@ cin>>n;
     int blocksPerGrid =(int) ceil((float)(n+1)/BLOCKSIZE);
 
     // ********* Kernel Launch ************************************
-    FD_kernel2<<<blocksPerGrid, BLOCKSIZE >>> (d_phi, d_phi_new, cu, n);
+    FD_kernel1<<<blocksPerGrid, BLOCKSIZE >>> (d_phi, d_phi_new, cu, n);
     // ************************************************************
 
     err = cudaGetLastError();

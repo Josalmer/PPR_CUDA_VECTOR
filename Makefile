@@ -11,8 +11,8 @@ GENCODE_FLAGS   ?= $(GENCODE_SM30) $(GENCODE_SM35) $(GENCODE_SM35) $(GENCODE_SM5
 
 
 vectorNS:vectorNS.cu
-	nvcc -I./includes  -O3 -m64   $(GENCODE_FLAGS) vectorNS.cu -o vectorNS
+	nvcc -I./includes  -O3 -m64   $(GENCODE_FLAGS) vector.cu -o vector
 
 clean: 
-	rm vectorNS *.o *~
+	rm vector *.o *~
       

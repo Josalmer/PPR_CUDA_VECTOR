@@ -6,9 +6,9 @@
 
 using namespace std;
 
-int index(int i) { return i + 1; }
+int index(int i) { return i + 2; }
 // Blocksize
-#define BLOCKSIZE 64
+#define BLOCKSIZE 1024
 // Number of mesh points
 int n = 60000;
 
@@ -24,20 +24,22 @@ void swap_pointers(float **a, float **b) {
 //*************************************************
 // GLOBAL MEMORY  VERSION OF THE FD UPDATE
 // ************************************************
-__global__ void FD_kernel1(float *d_phi, float *d_phi_new, float cu, int n) {
-  int i = threadIdx.x + blockDim.x * blockIdx.x + 1;
+__global__ void vectorNS(float *d_phi, float *d_phi_new, float cu, int n) {
+  int i = threadIdx.x + blockDim.x * blockIdx.x + 2;
 
   // Inner point update
-  if (i < n + 2) {
-    d_phi_new[i] = 0.5 * ((d_phi[i + 1] + d_phi[i - 1]) - cu * (d_phi[i + 1] - d_phi[i - 1]));
+  if (i < n + 3) {
+    d_phi_new[i] = (d_phi[i - 2] * d_phi[i - 2] + 2 * d_phi[i - 1] * d_phi[i - 1] + d_phi[i] * d_phi[i] - 3 * d_phi[i + 1] * d_phi[i +1] + 5 * d_phi[i + 2] * d_phi[i + 2]) / 24;
   }
 
   // Boundary Conditions
-  if (i == 1) {
-    d_phi_new[0] = d_phi_new[1];
+  if (i == 2) {
+    d_phi_new[0] = 0;
+    d_phi_new[1] = 0;
   }
-  if (i == n + 1) {
-    d_phi_new[n + 2] = d_phi_new[n + 1];
+  if (i == n + 2) {
+    d_phi_new[n + 3] = 0;
+    d_phi_new[n + 4] = 0;
   }
 }
 
@@ -126,10 +128,10 @@ int main(int argc, char *argv[]) {
   cout << "Number of time steps=" << nsteps << endl;
 
   //Mesh Definition    blockDim.x*blockIdx.x
-  float *phi = new float[n + 3];
-  float *phi_new = new float[n + 3];
-  float *phi_GPU = new float[n + 3];
-  float xx[n + 1];
+  float *phi = new float[n + 5];
+  float *phi_new = new float[n + 5];
+  float *phi_GPU = new float[n + 5];
+  float xx[n + 2];
 
   for (int i = 0; i <= n; i++) {
     xx[i] = -5.0 + i * dx;
@@ -160,11 +162,14 @@ int main(int argc, char *argv[]) {
   }
 
   // Take initial time
+  cout << "Start GPU" << endl;
   double t1 = clock();
 
   // Impose Boundary Conditions
-  phi[index(-1)] = phi[index(0)];
-  phi[index(n + 1)] = phi[index(n)];
+  phi[index(-2)] = 0;
+  phi[index(-1)] = 0;
+  phi[index(n + 1)] = 0;
+  phi[index(n + 2)] = 0;
 
   // Copy phi values to device memory
   err = cudaMemcpy(d_phi, phi, size, cudaMemcpyHostToDevice);
@@ -172,15 +177,14 @@ int main(int argc, char *argv[]) {
   if (err != cudaSuccess) {
     cout << "GPU COPY ERROR" << endl;
   }
-
   // *******************
   // Time Step Iteration
   // *******************
   for (int k = 0; k < nsteps; k++) {
-    int blocksPerGrid = (int)ceil((float)(n + 1) / BLOCKSIZE);
+    int blocksPerGrid = (int)ceil((float)(n + 2) / BLOCKSIZE);
 
     // ********* Kernel Launch ************************************
-    FD_kernel2<<<blocksPerGrid, BLOCKSIZE>>>(d_phi, d_phi_new, cu, n);
+    vectorNS<<<blocksPerGrid, BLOCKSIZE>>>(d_phi, d_phi_new, cu, n);
     // ************************************************************
 
     err = cudaGetLastError();
@@ -195,30 +199,31 @@ int main(int argc, char *argv[]) {
 
   double Tgpu = clock();
   Tgpu = (Tgpu - t1) / CLOCKS_PER_SEC;
+  cout << "End GPU" << endl;
 
   //**************************
   // CPU phase
   //**************************
 
-  double t1cpu = clock();
-
+  cout << "Start CPU" << endl;
+  double t1cpu = clock();    
+  
+  // Impose Boundary Conditions
+  phi[index(-2)] = 0;
+  phi[index(-1)] = 0;
+  phi[index(n + 1)] = 0;
+  phi[index(n + 2)] = 0;
   for (int k = 0; k < nsteps; k++) {
-    // Impose Boundary Conditions
-    phi[index(-1)] = phi[index(0)];
-    phi[index(n + 1)] = phi[index(n)];
-
     for (int i = 0; i <= n; i++) {
-      float phi_i = phi[index(i)];
-      float phi_ip1 = phi[index(i + 1)];
-      float phi_im1 = phi[index(i - 1)];
       //Lax-Friedrichs
-      phi_new[index(i)] = 0.5 * ((phi_ip1 + phi_im1) - cu * (phi_ip1 - phi_im1));
+      phi_new[index(i)] = (phi[index(i - 2)] * phi[index(i - 2)] + 2 * phi[index(i - 1)] *phi[index(i - 1)] + phi[index(i)] * phi[index(i)] - 3 * phi[index(i + 1)] * phi[index(i + 1)] + 5 * phi[index(i + 2)] * phi[index(i + 2)]) / 24;
     }
     swap_pointers(&phi, &phi_new);
   }
 
   double Tcpu = clock();
   Tcpu = (Tcpu - t1cpu) / CLOCKS_PER_SEC;
+  cout << "End CPU" << endl;
 
   cout << endl;
   cout << "GPU Time= " << Tgpu << endl << endl;
