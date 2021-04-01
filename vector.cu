@@ -22,9 +22,9 @@ void swap_pointers(float **a, float **b) {
 }
 
 //*************************************************
-// GLOBAL MEMORY  VERSION OF THE FD UPDATE
+// GLOBAL MEMORY  VERSION OF THE ALGORITHM
 // ************************************************
-__global__ void vectorNS(float *d_phi, float *d_phi_new, float cu, int n) {
+__global__ void vectorNS(float *d_phi, float *d_phi_new, int n) {
   int i = threadIdx.x + blockDim.x * blockIdx.x + 2;
 
   // Inner point update
@@ -44,47 +44,73 @@ __global__ void vectorNS(float *d_phi, float *d_phi_new, float cu, int n) {
 }
 
 //*************************************************
-// TILING VERSION  (USES SHARED MEMORY) OF THE FD UPDATE
+// TILING VERSION  (USES SHARED MEMORY) OF THE ALGORITHM
 // ************************************************
-__global__ void FD_kernel2(float *d_phi, float *d_phi_new, float cu, int n) {
-  int li = threadIdx.x + 1;                           //local index in shared memory vector
-  int gi = blockDim.x * blockIdx.x + threadIdx.x + 1; // global memory index
+__global__ void vectorS(float *d_phi, float *d_phi_new, int n) {
+  int li = threadIdx.x + 2;                           //local index in shared memory vector
+  int gi = blockDim.x * blockIdx.x + threadIdx.x + 2; // global memory index
   int lstart = 0;
-  int lend = BLOCKSIZE + 1;
-  __shared__ float s_phi[BLOCKSIZE + 2]; //shared mem. vector
-  float result;
+  int lend = BLOCKSIZE + 2;
+  __shared__ float s_phi[BLOCKSIZE + 4]; //shared mem. vector
 
   // Load Tile in shared memory
-  if (gi < n + 2) {
+  if (gi < n + 3) {
     s_phi[li] = d_phi[gi];
   }
 
   if (threadIdx.x == 0) { // First Thread (in the current block)
-    s_phi[lstart] = d_phi[gi - 1];
+    s_phi[lstart] = d_phi[gi - 2];
+    s_phi[lstart + 1] = d_phi[gi - 1];
   }
 
   if (threadIdx.x == BLOCKSIZE - 1) { // Last Thread
     if (gi >= n + 1) {                // Last Block
       s_phi[(n + 2) % BLOCKSIZE] = d_phi[n + 2];
     } else {
-      s_phi[lend] = d_phi[gi + 1];
+      s_phi[lend - 1] = d_phi[gi + 1];
+      s_phi[lend] = d_phi[gi + 2];
     }
   }
   __syncthreads();
 
   if (gi < n + 2) {
     // Lax-Friedrichs Update
-    result = 0.5 * ((s_phi[li + 1] + s_phi[li - 1]) - cu * (s_phi[li + 1] - s_phi[li - 1]));
-    d_phi_new[gi] = result;
+    d_phi_new[gi] = (s_phi[li - 2] * s_phi[li - 2] + 2 * s_phi[li - 1] * s_phi[li - 1] + s_phi[li] * s_phi[li] - 3 * s_phi[li + 1] * s_phi[li +1] + 5 * s_phi[li + 2] * s_phi[li + 2]) / 24;
   }
 
   // Boundary Conditions
-  if (gi == 1) {
-    d_phi_new[0] = d_phi_new[1];
+  if (gi == 2) {
+    d_phi_new[0] = 0;
+    d_phi_new[1] = 0;
   }
-  if (gi == n + 1) {
-    d_phi_new[n + 2] = d_phi_new[n + 1];
+  if (gi == n + 2) {
+    d_phi_new[n + 3] = 0;
+    d_phi_new[n + 4] = 0;
   }
+}
+
+//**************************************************************************
+// FIND MAX IN VECTOR
+__global__ void reduceMax(float * V_in, float * V_out, const int N) {
+	extern __shared__ float sdata[];
+
+	int tid = threadIdx.x;
+	int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
+	sdata[tid] = ((i < N) ? V_in[i] : -1);
+	sdata[tid] = (((i + blockDim.x) < N) && V_in[i] < V_in[i + blockDim.x] ? V_in[i + blockDim.x] : sdata[tid]);
+	__syncthreads();
+
+	for(int s = blockDim.x/2; s > 0; s >>= 1) {
+	  if (tid < s) {
+		if(sdata[tid] < sdata[tid+s]) {
+                    sdata[tid] = sdata[tid+s];	
+		}
+	  }
+	  __syncthreads();
+	}
+	if (tid == 0) {
+		V_out[blockIdx.x] = sdata[0];
+	}
 }
 
 //******************************
@@ -184,7 +210,7 @@ int main(int argc, char *argv[]) {
     int blocksPerGrid = (int)ceil((float)(n + 2) / BLOCKSIZE);
 
     // ********* Kernel Launch ************************************
-    vectorNS<<<blocksPerGrid, BLOCKSIZE>>>(d_phi, d_phi_new, cu, n);
+    vectorS<<<blocksPerGrid, BLOCKSIZE>>>(d_phi, d_phi_new, n);
     // ************************************************************
 
     err = cudaGetLastError();
@@ -253,6 +279,35 @@ int main(int argc, char *argv[]) {
 
   cout << endl;
   cout << "Speedup (T_CPU/T_GPU)= " << Tcpu / Tgpu << endl;
+
+	// c_d Maximum computation on GPU
+	dim3 threadsPerBlock(BLOCKSIZE);
+	dim3 numBlocks( ceil ((float)(n / 2)/threadsPerBlock.x));
+
+	// Maximum vector on CPU
+	float * vmax;
+	vmax = (float*) malloc(numBlocks.x*sizeof(float));
+
+	// Maximum vector  to be computed on GPU
+	float *vmax_d; 
+	cudaMalloc ((void **) &vmax_d, sizeof(float)*numBlocks.x);
+
+	float smemSize = threadsPerBlock.x*sizeof(float);
+
+	// Kernel launch to compute Minimum Vector
+	reduceMax<<<numBlocks, threadsPerBlock, smemSize>>>(phi_GPU,vmax_d, n);
+
+
+	/* Copy data from device memory to host memory */
+	cudaMemcpy(vmax, vmax_d, numBlocks.x*sizeof(float),cudaMemcpyDeviceToHost);
+
+	// Perform final reduction in CPU
+	float max_gpu = -1;
+	for (int i=0; i<numBlocks.x; i++) {
+		max_gpu =max(max_gpu,vmax[i]);
+	}
+
+	cout << endl << "Valor máximo = " << max_gpu << endl;
 
   return 0;
 }

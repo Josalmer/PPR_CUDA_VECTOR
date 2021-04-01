@@ -10,7 +10,7 @@ GENCODE_SMXX    := -gencode arch=compute_70,code=compute_70
 GENCODE_FLAGS   ?= $(GENCODE_SM30) $(GENCODE_SM35) $(GENCODE_SM35) $(GENCODE_SM50) $(GENCODE_SM60) $(GENCODE_SMXX)
 
 
-vectorNS:vectorNS.cu
+vector:vector.cu
 	nvcc -I./includes  -O3 -m64   $(GENCODE_FLAGS) vector.cu -o vector
 
 clean: 
