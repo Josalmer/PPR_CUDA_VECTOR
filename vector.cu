@@ -31,31 +31,33 @@ __global__ void vectorS(float *in, float *out, int n) {
   int li = threadIdx.x + 2;                           //local index in shared memory vector
   int gi = blockDim.x * blockIdx.x + threadIdx.x + 2; // global memory index
   int lstart = 0;
-  int lend = BLOCKSIZE + 2;
-  __shared__ float s_phi[BLOCKSIZE + 4]; //shared mem. vector
+  __shared__ float s_in[BLOCKSIZE + 4]; //shared mem. vector
 
   // Load Tile in shared memory
   if (gi < n + 3) {
-    s_phi[li] = in[gi];
+    s_in[li] = in[gi];
   }
 
   if (threadIdx.x == 0) { // First Thread (in the current block)
-    s_phi[lstart] = in[gi - 2];
-    s_phi[lstart + 1] = in[gi - 1];
+    s_in[lstart] = in[gi - 2];
+    s_in[lstart + 1] = in[gi - 1];
   }
 
-  if (threadIdx.x == BLOCKSIZE - 1) { // Last Thread
-    if (gi >= n + 1) {                // Last Block
-      s_phi[(n + 2) % BLOCKSIZE] = in[n + 2];
-    } else {
-      s_phi[lend - 1] = in[gi + 1];
-      s_phi[lend] = in[gi + 2];
-    }
+  if ((gi >= n + 1) || (threadIdx.x == BLOCKSIZE - 1)) { // Last Block ||  Last Thread
+      s_in[li + 1] = in[gi + 1];
+      s_in[li + 2] = in[gi + 2];
   }
   __syncthreads();
 
-  if (gi < n + 2) {
-    out[gi] = (s_phi[li - 2] * s_phi[li - 2] + 2 * s_phi[li - 1] * s_phi[li - 1] + s_phi[li] * s_phi[li] - 3 * s_phi[li + 1] * s_phi[li +1] + 5 * s_phi[li + 2] * s_phi[li + 2]) / 24;
+
+  int iB = gi - 2;
+  if (iB < n) {
+    float Aim2 = s_in[li - 2];
+    float Aim1 = s_in[li - 1];
+    float Ai = s_in[li];
+    float Aip1 = s_in[li + 1];
+    float Aip2 = s_in[li + 2];
+    out[iB] = (pow(Aim2, 2) + 2.0 * pow(Aim1, 2) + pow(Ai, 2) - 3.0 * pow(Aip1, 2) + 5.0 * pow(Aip2, 2)) / 24.0;
   }
 }
 
@@ -126,7 +128,8 @@ int main(int argc, char *argv[]) {
   //**************************
   // GPU phase
   //**************************
-  float *B_GPU = new float[N];
+  float *B_GPU_global = new float[N];
+  float *B_GPU_shared = new float[N];
 
   int Nsize = N * sizeof(float);
   int NsizeWithBound = (N + 4) * sizeof(float);
@@ -142,10 +145,6 @@ int main(int argc, char *argv[]) {
     cout << "ALLOCATION ERROR" << endl;
   }
 
-  // Take initial time
-  cout << "Start GPU" << endl;
-  double gt1 = clock();
-
   // Copy A values to device memory
   err = cudaMemcpy(A_GPU, A, NsizeWithBound, cudaMemcpyHostToDevice);
 
@@ -154,6 +153,35 @@ int main(int argc, char *argv[]) {
   }
 
   int blocksPerGrid = (int)ceil((float)(N) / BLOCKSIZE);
+
+  // Shared memory
+  // Take initial time
+  cout << "Start GPU Shared" << endl;
+  double gst1 = clock();
+
+	int smemSizeVec = (BLOCKSIZE + 4)*sizeof(float);
+
+  cout << endl;
+  // ********* Kernel Launch ************************************
+  vectorS<<<blocksPerGrid, BLOCKSIZE, smemSizeVec>>>(A_GPU, out, N);
+  // ************************************************************
+
+  err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    fprintf(stderr, "Failed to launch kernel! %d \n", err);
+    exit(EXIT_FAILURE);
+  }
+
+  cudaMemcpy(B_GPU_shared, out, Nsize, cudaMemcpyDeviceToHost);
+
+  double TgpuS = clock();
+  TgpuS = (TgpuS - gst1) / CLOCKS_PER_SEC;
+  cout << "End GPU shared" << endl;
+
+  // Global memory
+  // Take initial time
+  cout << "Start GPU Global" << endl;
+  double ggt1 = clock();
 
   cout << endl;
   // ********* Kernel Launch ************************************
@@ -166,11 +194,11 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  cudaMemcpy(B_GPU, out, Nsize, cudaMemcpyDeviceToHost);
+  cudaMemcpy(B_GPU_global, out, Nsize, cudaMemcpyDeviceToHost);
 
-  double Tgpu = clock();
-  Tgpu = (Tgpu - gt1) / CLOCKS_PER_SEC;
-  cout << "End GPU" << endl;
+  double TgpuG = clock();
+  TgpuG = (TgpuG - ggt1) / CLOCKS_PER_SEC;
+  cout << "End GPU global" << endl;
 
   //**************************
   // CPU phase
@@ -203,7 +231,7 @@ int main(int argc, char *argv[]) {
   int passed = 1;
   int i = 0;
   while (passed && i < N) {
-    float diff = fabs(B[i] - B_GPU[i]);
+    float diff = fabs(B[i] - B_GPU_global[i]);
     if (diff > 0) {
       passed = 0;
       cout << endl << i << endl;
@@ -213,10 +241,29 @@ int main(int argc, char *argv[]) {
   }
 
   if (passed) {
-    cout << "PASSED TEST !!!" << endl;
+    cout << "PASSED TEST GLOBAL MEMORY!!!" << endl;
   }
   else {
-    cout << "ERROR IN TEST !!!" << endl;
+    cout << "ERROR IN TEST GLOBAL MEMORY!!!" << endl;
+  }
+
+  passed = 1;
+  i = 0;
+  while (passed && i < N) {
+    float diff = fabs(B[i] - B_GPU_shared[i]);
+    if (diff > 0) {
+      passed = 0;
+      cout << endl << i << endl;
+      cout << "DIFF= " << diff << endl;
+    }
+    i++;
+  }
+
+  if (passed) {
+    cout << "PASSED TEST SHARED MEMORY!!!" << endl;
+  }
+  else {
+    cout << "ERROR IN TEST SHARED MEMORY!!!" << endl;
   }
 
 	// c_d Maximum computation on GPU
@@ -248,7 +295,7 @@ int main(int argc, char *argv[]) {
 
   if (N < 16) {
     for (int i = 0; i < N; i++) {
-      cout << "CPU[" << i << "] = " << B[i] << ", GPU[" << i << "] = " << B_GPU[i] << endl;
+      cout << "CPU[" << i << "] = " << B[i] << ", GPU[" << i << "] = " << B_GPU_global[i] << endl;
     }
   }
   cout << "................................." << endl;
@@ -260,16 +307,22 @@ int main(int argc, char *argv[]) {
        << "Tiempo gastado CPU= " << Tcpu << endl
        << endl;
   cout << endl
-       << "Tiempo gastado GPU= " << Tgpu << endl
+       << "Tiempo gastado GPU (SHARED MEMORY)= " << TgpuS << endl
        << endl;
   cout << endl
-       << "Speedup GPU= " << Tcpu / Tgpu << endl
+       << "Speedup GPU (SHARED MEMORY)= " << Tcpu / TgpuS << endl
+       << endl;
+  cout << endl
+       << "Tiempo gastado GPU (GLOBAL MEMORY)= " << TgpuG << endl
+       << endl;
+  cout << endl
+       << "Speedup GPU (GLOBAL MEMORY)= " << Tcpu / TgpuG << endl
        << endl;
 
   //* Free the memory */
   delete (A);
   delete (B);
   cudaFree(A_GPU);
-  cudaFree(B_GPU);
+  cudaFree(B_GPU_global);
   cudaFree(out);
 }
