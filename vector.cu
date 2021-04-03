@@ -67,20 +67,28 @@ __global__ void reduceMax(float * V_in, float * V_out, const int N) {
 	extern __shared__ float sdata[];
 
 	int tid = threadIdx.x;
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	int mid = blockDim.x/2;
+	int i = blockIdx.x * (blockDim.x * 2) + threadIdx.x;
 	sdata[tid] = ((i < N) ? V_in[i] : -1);
+	sdata[tid + blockDim.x] = ((i + blockDim.x) < N ? V_in[i + blockDim.x] : -1);
 	__syncthreads();
 
-	for(int s = blockDim.x/2; s > 0; s >>= 1) {
+	for(int s = mid; s > 0; s >>= 1) {
 	  if (tid < s) {
       if(sdata[tid] < sdata[tid + s]) {
         sdata[tid] = sdata[tid + s];
+      }
+	  } else if((i + blockDim.x + s) < N) {
+      if(sdata[tid + mid] < sdata[tid + mid + s]) {
+        sdata[tid + mid] = sdata[tid + mid + s];
       }
 	  }
 	  __syncthreads();
 	}
 	if (tid == 0) {
-		V_out[blockIdx.x] = sdata[0];
+		V_out[blockIdx.x * 2] = sdata[0];
+	} else if (tid == mid) {
+		V_out[(blockIdx.x * 2) + 1] = sdata[tid + mid];
 	}
 }
 
@@ -268,24 +276,24 @@ int main(int argc, char *argv[]) {
 
 	// c_d Maximum computation on GPU
 	dim3 threadsPerBlock(BLOCKSIZE);
-	dim3 numBlocks( ceil ((float)(N)/threadsPerBlock.x));
+	dim3 numBlocks( ceil ((float)(N / 2)/threadsPerBlock.x));
 
 	// Maximum vector on CPU
 	float * vmax;
-	vmax = (float*) malloc(numBlocks.x*sizeof(float));
+	vmax = (float*) malloc(2*numBlocks.x*sizeof(float));
 
 	// Maximum vector  to be computed on GPU
 	float *vmax_d; 
-	cudaMalloc ((void **) &vmax_d, sizeof(float)*numBlocks.x);
+	cudaMalloc ((void **) &vmax_d, sizeof(float)*2*numBlocks.x);
 
-	float smemSize = threadsPerBlock.x*sizeof(float);
+	float smemSize = 2*threadsPerBlock.x*sizeof(float);
 
 	// Kernel launch to compute Minimum Vector
 	reduceMax<<<numBlocks, threadsPerBlock, smemSize>>>(out,vmax_d, N);
 
 
 	/* Copy data from device memory to host memory */
-	cudaMemcpy(vmax, vmax_d, numBlocks.x*sizeof(float),cudaMemcpyDeviceToHost);
+	cudaMemcpy(vmax, vmax_d, 2*numBlocks.x*sizeof(float),cudaMemcpyDeviceToHost);
 
 	// Perform final reduction in CPU
 	float max_gpu = -1;
