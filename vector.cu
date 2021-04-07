@@ -11,7 +11,6 @@ using namespace std;
 // GLOBAL MEMORY  VERSION OF THE ALGORITHM
 // ************************************************
 __global__ void vectorNS(float *in, float *out, int n) {
-
   int i = threadIdx.x + blockDim.x * blockIdx.x + 2;
   int iB = i - 2;
   if (iB < n) {
@@ -48,7 +47,6 @@ __global__ void vectorS(float *in, float *out, int n) {
       s_in[li + 2] = in[gi + 2];
   }
   __syncthreads();
-
 
   int iB = gi - 2;
   if (iB < n) {
@@ -165,6 +163,7 @@ int main(int argc, char *argv[]) {
   // Shared memory
   // Take initial time
   cout << "Start GPU Shared" << endl;
+  cudaDeviceSynchronize();
   double gst1 = clock();
 
 	int smemSizeVec = (BLOCKSIZE + 4)*sizeof(float);
@@ -174,6 +173,11 @@ int main(int argc, char *argv[]) {
   vectorS<<<blocksPerGrid, BLOCKSIZE, smemSizeVec>>>(A_GPU, out, N);
   // ************************************************************
 
+  cudaDeviceSynchronize();
+  double TgpuS = clock();
+  TgpuS = (TgpuS - gst1) / CLOCKS_PER_SEC;
+  cout << "End GPU shared" << endl;
+
   err = cudaGetLastError();
   if (err != cudaSuccess) {
     fprintf(stderr, "Failed to launch kernel! %d \n", err);
@@ -182,19 +186,21 @@ int main(int argc, char *argv[]) {
 
   cudaMemcpy(B_GPU_shared, out, Nsize, cudaMemcpyDeviceToHost);
 
-  double TgpuS = clock();
-  TgpuS = (TgpuS - gst1) / CLOCKS_PER_SEC;
-  cout << "End GPU shared" << endl;
-
   // Global memory
   // Take initial time
   cout << "Start GPU Global" << endl;
+  cudaDeviceSynchronize();
   double ggt1 = clock();
 
   cout << endl;
   // ********* Kernel Launch ************************************
   vectorNS<<<blocksPerGrid, BLOCKSIZE>>>(A_GPU, out, N);
   // ************************************************************
+
+  cudaDeviceSynchronize();
+  double TgpuG = clock();
+  TgpuG = (TgpuG - ggt1) / CLOCKS_PER_SEC;
+  cout << "End GPU global" << endl;
 
   err = cudaGetLastError();
   if (err != cudaSuccess) {
@@ -203,10 +209,6 @@ int main(int argc, char *argv[]) {
   }
 
   cudaMemcpy(B_GPU_global, out, Nsize, cudaMemcpyDeviceToHost);
-
-  double TgpuG = clock();
-  TgpuG = (TgpuG - ggt1) / CLOCKS_PER_SEC;
-  cout << "End GPU global" << endl;
 
   //**************************
   // CPU phase
