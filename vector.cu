@@ -10,7 +10,7 @@ using namespace std;
 //*************************************************
 // GLOBAL MEMORY  VERSION OF THE ALGORITHM
 // ************************************************
-__global__ void vectorNS(float *in, float *out, int n) {
+__global__ void vectorNS(float *in, float *out, int n, int ex) {
   int i = threadIdx.x + blockDim.x * blockIdx.x + 2;
   int iB = i - 2;
   if (iB < n) {
@@ -19,14 +19,14 @@ __global__ void vectorNS(float *in, float *out, int n) {
     float Ai = in[i];
     float Aip1 = in[i + 1];
     float Aip2 = in[i + 2];
-    out[iB] = (pow(Aim2, 2) + 2.0 * pow(Aim1, 2) + pow(Ai, 2) - 3.0 * pow(Aip1, 2) + 5.0 * pow(Aip2, 2)) / 24.0;
+    out[iB] = (pow(Aim2, ex) + 2.0 * pow(Aim1, ex) + pow(Ai, ex) - 3.0 * pow(Aip1, ex) + 5.0 * pow(Aip2, ex)) / 24.0;
   }
 }
 
 //*************************************************
 // TILING VERSION  (USES SHARED MEMORY) OF THE ALGORITHM
 // ************************************************
-__global__ void vectorS(float *in, float *out, int n) {
+__global__ void vectorS(float *in, float *out, int n, int ex) {
   int li = threadIdx.x + 2;                           //local index in shared memory vector
   int gi = blockDim.x * blockIdx.x + threadIdx.x + 2; // global memory index
   int lstart = 0;
@@ -55,7 +55,7 @@ __global__ void vectorS(float *in, float *out, int n) {
     float Ai = s_in[li];
     float Aip1 = s_in[li + 1];
     float Aip2 = s_in[li + 2];
-    out[iB] = (pow(Aim2, 2) + 2.0 * pow(Aim1, 2) + pow(Ai, 2) - 3.0 * pow(Aip1, 2) + 5.0 * pow(Aip2, 2)) / 24.0;
+    out[iB] = (pow(Aim2, ex) + 2.0 * pow(Aim1, ex) + pow(Ai, ex) - 3.0 * pow(Aip1, ex) + 5.0 * pow(Aip2, ex)) / 24.0;
   }
 }
 
@@ -105,12 +105,14 @@ int main(int argc, char *argv[]) {
   printf("Device %d: \"%s\" with Compute %d.%d capability\n", devID, props.name, props.major, props.minor);
 
   int N;
-  if (argc != 2) {
-    cout << "Uso: transformacion Num_elementos  " << endl;
+  int ex;
+  if (argc != 3) {
+    cout << "Uso: transformacion Num_elementos Potencia " << endl;
     return (0);
   }
   else {
     N = atoi(argv[1]);
+    ex = atoi(argv[2]);
   }
 
   //* pointers to host memory */
@@ -170,7 +172,7 @@ int main(int argc, char *argv[]) {
 
   cout << endl;
   // ********* Kernel Launch ************************************
-  vectorS<<<blocksPerGrid, BLOCKSIZE, smemSizeVec>>>(A_GPU, out, N);
+  vectorS<<<blocksPerGrid, BLOCKSIZE, smemSizeVec>>>(A_GPU, out, N, ex);
   // ************************************************************
 
   cudaDeviceSynchronize();
@@ -194,7 +196,7 @@ int main(int argc, char *argv[]) {
 
   cout << endl;
   // ********* Kernel Launch ************************************
-  vectorNS<<<blocksPerGrid, BLOCKSIZE>>>(A_GPU, out, N);
+  vectorNS<<<blocksPerGrid, BLOCKSIZE>>>(A_GPU, out, N, ex);
   // ************************************************************
 
   cudaDeviceSynchronize();
@@ -226,7 +228,7 @@ int main(int argc, char *argv[]) {
     Ai = A[i];
     Aip1 = A[i + 1];
     Aip2 = A[i + 2];
-    B[iB] = (pow(Aim2, 2) + 2.0 * pow(Aim1, 2) + pow(Ai, 2) - 3.0 * pow(Aip1, 2) + 5.0 * pow(Aip2, 2)) / 24.0;
+    B[iB] = (pow(Aim2, ex) + 2.0 * pow(Aim1, ex) + pow(Ai, ex) - 3.0 * pow(Aip1, ex) + 5.0 * pow(Aip2, ex)) / 24.0;
     mx = (iB == 0) ? B[0] : max(B[iB], mx);
   }
 
